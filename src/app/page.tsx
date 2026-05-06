@@ -268,18 +268,18 @@ const southSignCells: Record<number, { x: number; y: number }> = {
 };
 
 const eastHouseCoordinates: Record<number, { x: number; y: number }> = {
-  1: { x: 50, y: 17 },
-  2: { x: 24, y: 17 },
-  3: { x: 12, y: 38 },
-  4: { x: 24, y: 62 },
-  5: { x: 12, y: 84 },
-  6: { x: 33, y: 84 },
-  7: { x: 50, y: 63 },
-  8: { x: 67, y: 84 },
-  9: { x: 88, y: 84 },
-  10: { x: 76, y: 62 },
-  11: { x: 88, y: 38 },
-  12: { x: 76, y: 17 },
+  1: { x: 50, y: 18 },
+  2: { x: 21, y: 15 },
+  3: { x: 11, y: 36 },
+  4: { x: 23, y: 57 },
+  5: { x: 12, y: 82 },
+  6: { x: 31, y: 84 },
+  7: { x: 50, y: 61 },
+  8: { x: 69, y: 84 },
+  9: { x: 88, y: 82 },
+  10: { x: 77, y: 57 },
+  11: { x: 89, y: 36 },
+  12: { x: 79, y: 15 },
 };
 
 export default function Home() {
@@ -1278,16 +1278,24 @@ function NorthIndianChart({
           const coord = houseCoordinates[house];
           const housePlanets = planetByHouse.get(house) ?? [];
           const sign = signByHouse.get(house) ?? (house === 1 ? ascendantSign : undefined);
+          const label = `${house}${sign ? ` · ${signGlyphs[sign]}` : ""}`;
+          const planetsLabel = `${house === 1 ? "Asc" : ""}${house === 1 && housePlanets.length ? " · " : ""}${housePlanets.map((planet) => planetShort[planet.name] ?? planet.name.slice(0, 2)).join(" ")}`;
           return (
             <g key={house}>
+              <rect
+                x={coord.x - 7.5}
+                y={coord.y - 7.3}
+                width="15"
+                height="11.2"
+                rx="1.2"
+                fill="#fffaf0"
+                opacity="0.72"
+              />
               <text x={coord.x} y={coord.y - 4} textAnchor="middle" className="fill-[#8d1f1f] text-[3.2px] font-bold">
-                {house}
-                {sign ? ` · ${signGlyphs[sign]}` : ""}
+                {label}
               </text>
               <text x={coord.x} y={coord.y + 1.2} textAnchor="middle" className="fill-stone-950 text-[3px] font-semibold">
-                {house === 1 ? "Asc" : ""}
-                {house === 1 && housePlanets.length ? " · " : ""}
-                {housePlanets.map((planet) => planetShort[planet.name] ?? planet.name.slice(0, 2)).join(" ")}
+                {planetsLabel}
               </text>
             </g>
           );
@@ -1374,6 +1382,8 @@ function SouthIndianChart({
           const house = signToHouse.get(signId);
           const signPlanets = planets.filter((planet) => planet.sign_id === signId);
           const isAsc = ascSign === signId;
+          const label = `${house ? `${house} · ` : ""}${signGlyphs[signId]}`;
+          const planetsLabel = `${isAsc ? "Asc" : ""}${isAsc && signPlanets.length ? " · " : ""}${signPlanets.map((planet) => planetShort[planet.name] ?? planet.name.slice(0, 2)).join(" ")}`;
           return (
             <g key={signId}>
               <rect
@@ -1386,13 +1396,10 @@ function SouthIndianChart({
                 strokeWidth="0.8"
               />
               <text x={cell.x + 12.5} y={cell.y + 7} textAnchor="middle" className="fill-[#8d1f1f] text-[3px] font-bold">
-                {house ? `${house} · ` : ""}
-                {signGlyphs[signId]}
+                {label}
               </text>
               <text x={cell.x + 12.5} y={cell.y + 13} textAnchor="middle" className="fill-stone-950 text-[2.7px] font-semibold">
-                {isAsc ? "Asc" : ""}
-                {isAsc && signPlanets.length ? " · " : ""}
-                {signPlanets.map((planet) => planetShort[planet.name] ?? planet.name.slice(0, 2)).join(" ")}
+                {planetsLabel}
               </text>
             </g>
           );
@@ -1450,16 +1457,24 @@ function EastIndianChart({
           const coord = eastHouseCoordinates[house];
           const housePlanets = planetByHouse.get(house) ?? [];
           const sign = signByHouse.get(house);
+          const label = `${house}${sign ? ` · ${signGlyphs[sign]}` : ""}`;
+          const planetsLabel = `${house === 1 ? "Asc" : ""}${house === 1 && housePlanets.length ? " · " : ""}${housePlanets.map((planet) => planetShort[planet.name] ?? planet.name.slice(0, 2)).join(" ")}`;
           return (
             <g key={house}>
-              <text x={coord.x} y={coord.y - 3.8} textAnchor="middle" className="fill-[#8d1f1f] text-[3px] font-bold">
-                {house}
-                {sign ? ` · ${signGlyphs[sign]}` : ""}
+              <rect
+                x={coord.x - 7.4}
+                y={coord.y - 7.2}
+                width="14.8"
+                height="11.2"
+                rx="1.1"
+                fill="#fffaf0"
+                opacity="0.7"
+              />
+              <text x={coord.x} y={coord.y - 3.8} textAnchor="middle" className="fill-[#8d1f1f] text-[2.85px] font-bold">
+                {label}
               </text>
-              <text x={coord.x} y={coord.y + 1.4} textAnchor="middle" className="fill-stone-950 text-[2.8px] font-semibold">
-                {house === 1 ? "Asc" : ""}
-                {house === 1 && housePlanets.length ? " · " : ""}
-                {housePlanets.map((planet) => planetShort[planet.name] ?? planet.name.slice(0, 2)).join(" ")}
+              <text x={coord.x} y={coord.y + 1.4} textAnchor="middle" className="fill-stone-950 text-[2.55px] font-semibold">
+                {planetsLabel}
               </text>
             </g>
           );
