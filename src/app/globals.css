@@ -1,0 +1,114 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fffaf0;
+  --foreground: #1c1712;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #675b4a;
+}
+
+.field-input {
+  height: 2.625rem;
+  width: 100%;
+  border: 1px solid #d8bd72;
+  border-radius: 0.25rem;
+  background: #fffdf7;
+  padding: 0 0.75rem;
+  color: #1c1712;
+  outline: none;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.field-input-with-icon {
+  padding-left: 2.45rem;
+}
+
+.field-select {
+  appearance: none;
+  background-color: #fffdf7;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #681414 50%),
+    linear-gradient(135deg, #681414 50%, transparent 50%);
+  background-position:
+    calc(100% - 1rem) 1.05rem,
+    calc(100% - 0.65rem) 1.05rem;
+  background-repeat: no-repeat;
+  background-size: 0.35rem 0.35rem;
+  padding-right: 2.25rem;
+}
+
+.field-input:focus {
+  border-color: #8d1f1f;
+  box-shadow: 0 0 0 3px rgba(141, 31, 31, 0.12);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.data-table th {
+  background: #fff3cf;
+  color: #681414;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 0.7rem 0.8rem;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.data-table td {
+  border-bottom: 1px solid #f0dfae;
+  padding: 0.75rem 0.8rem;
+  color: #4a4034;
+}
+
+@media print {
+  button,
+  aside {
+    display: none !important;
+  }
+
+  main {
+    background: white !important;
+  }
+}
