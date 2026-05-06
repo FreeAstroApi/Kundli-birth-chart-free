@@ -9,6 +9,8 @@ type BirthPayload = {
   day: number;
   hour: number;
   minute: number;
+  second?: number;
+  gender?: string;
   city: string;
   lat: number;
   lng: number;

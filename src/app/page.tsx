@@ -2,20 +2,27 @@
 
 import {
   Activity,
+  Archive,
+  BookOpen,
   CalendarDays,
   Check,
   ChevronRight,
   Clock3,
   Compass,
   Download,
+  FileText,
   LoaderCircle,
   MapPin,
   Moon,
+  Save,
   Search,
   Settings2,
   Sparkles,
   Sun,
+  Trash2,
+  Users,
 } from "lucide-react";
+import { openDB } from "idb";
 import { FormEvent, useEffect, useState } from "react";
 
 type CityResult = {
@@ -33,12 +40,27 @@ type BirthForm = {
   name: string;
   date: string;
   time: string;
+  seconds: string;
+  gender: "not_specified" | "female" | "male" | "other";
   cityQuery: string;
   city: CityResult | null;
+  manualCoordinates: boolean;
+  manualLat: string;
+  manualLng: string;
+  timezoneOverride: string;
   ayanamsha: "lahiri" | "raman" | "krishnamurti";
   house_system: "whole_sign" | "equal" | "placidus";
   node_type: "mean" | "true";
 };
+
+type ChartSettings = {
+  style: "north" | "south" | "east";
+  language: "en";
+};
+
+type Mode = "birth" | "matching" | "saved";
+
+type ResultTab = "chart" | "planets" | "dasha" | "yogas" | "vargas" | "panchang" | "predictions" | "remedies";
 
 type ReportOptions = {
   dasha: boolean;
@@ -105,10 +127,33 @@ type KundliResult = {
   errors?: Record<string, string>;
 };
 
+type SavedChart = {
+  id: string;
+  label: string;
+  birth: BirthForm;
+  options: ReportOptions;
+  settings: ChartSettings;
+  result: KundliResult;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type MatchResult = {
+  input?: {
+    p1?: { label?: string; city?: string };
+    p2?: { label?: string; city?: string };
+    ayanamsha?: string;
+  };
+  match?: Record<string, unknown>;
+};
+
 const initialForm: BirthForm = {
   name: "Client",
   date: "1997-09-22",
   time: "23:25",
+  seconds: "00",
+  gender: "not_specified",
   cityQuery: "Mumbai",
   city: {
     name: "Mumbai",
@@ -120,6 +165,10 @@ const initialForm: BirthForm = {
     timezone: "Asia/Kolkata",
     population: 12691836,
   },
+  manualCoordinates: false,
+  manualLat: "",
+  manualLng: "",
+  timezoneOverride: "",
   ayanamsha: "lahiri",
   house_system: "whole_sign",
   node_type: "mean",
@@ -162,8 +211,69 @@ const planetShort: Record<string, string> = {
   Ketu: "Ke",
 };
 
+const resultTabs: { key: ResultTab; label: string }[] = [
+  { key: "chart", label: "Chart" },
+  { key: "planets", label: "Planets" },
+  { key: "dasha", label: "Dasha" },
+  { key: "yogas", label: "Yogas" },
+  { key: "vargas", label: "Vargas" },
+  { key: "panchang", label: "Panchang" },
+  { key: "predictions", label: "Predictions" },
+  { key: "remedies", label: "Remedies" },
+];
+
+const signLords: Record<string, string> = {
+  Aries: "Mars",
+  Taurus: "Venus",
+  Gemini: "Mercury",
+  Cancer: "Moon",
+  Leo: "Sun",
+  Virgo: "Mercury",
+  Libra: "Venus",
+  Scorpio: "Mars",
+  Sagittarius: "Jupiter",
+  Capricorn: "Saturn",
+  Aquarius: "Saturn",
+  Pisces: "Jupiter",
+};
+
+const combustThresholds: Record<string, number> = {
+  Moon: 12,
+  Mars: 17,
+  Mercury: 14,
+  Jupiter: 11,
+  Venus: 10,
+  Saturn: 15,
+};
+
+const chartDescriptions: Record<ChartSettings["style"], string> = {
+  north: "North Indian diamond",
+  south: "South Indian fixed signs",
+  east: "East Indian square",
+};
+
 export default function Home() {
+  const [mode, setMode] = useState<Mode>("birth");
+  const [activeTab, setActiveTab] = useState<ResultTab>("chart");
+  const [settings, setSettings] = useState<ChartSettings>({ style: "north", language: "en" });
   const [form, setForm] = useState<BirthForm>(initialForm);
+  const [matchP1, setMatchP1] = useState<BirthForm>({ ...initialForm, name: "Person 1" });
+  const [matchP2, setMatchP2] = useState<BirthForm>({
+    ...initialForm,
+    name: "Person 2",
+    date: "1999-08-20",
+    time: "14:15",
+    cityQuery: "Delhi",
+    city: {
+      name: "Delhi",
+      country: "IN",
+      state: "Delhi",
+      district: null,
+      lat: 28.6139,
+      lng: 77.209,
+      timezone: "Asia/Kolkata",
+    },
+  });
   const [options, setOptions] = useState<ReportOptions>({
     dasha: true,
     yogas: true,
@@ -177,6 +287,16 @@ export default function Home() {
   const [result, setResult] = useState<KundliResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const [notes, setNotes] = useState("");
+  const [savedCharts, setSavedCharts] = useState<SavedChart[]>([]);
+  const [savedSearch, setSavedSearch] = useState("");
+  const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
+  const [matching, setMatching] = useState(false);
+  const [matchError, setMatchError] = useState("");
+
+  useEffect(() => {
+    loadSavedCharts().then(setSavedCharts).catch(() => setSavedCharts([]));
+  }, []);
 
   useEffect(() => {
     const q = form.cityQuery.trim();
@@ -225,6 +345,9 @@ export default function Home() {
 
     const [year, month, day] = form.date.split("-").map(Number);
     const [hour, minute] = form.time.split(":").map(Number);
+    const lat = form.manualCoordinates && form.manualLat.trim() ? Number(form.manualLat) : form.city.lat;
+    const lng = form.manualCoordinates && form.manualLng.trim() ? Number(form.manualLng) : form.city.lng;
+    const timezone = form.timezoneOverride.trim() || form.city.timezone;
 
     setSubmitting(true);
     try {
@@ -239,10 +362,12 @@ export default function Home() {
             day,
             hour,
             minute,
+            second: Number(form.seconds) || 0,
+            gender: form.gender,
             city: form.city.name,
-            lat: form.city.lat,
-            lng: form.city.lng,
-            tz_str: form.city.timezone,
+            lat,
+            lng,
+            tz_str: timezone,
             ayanamsha: form.ayanamsha,
             house_system: form.house_system,
             node_type: form.node_type,
@@ -255,11 +380,83 @@ export default function Home() {
         throw new Error(payload.error ?? "Unable to calculate Kundli");
       }
       setResult(payload);
+      setActiveTab("chart");
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "Unable to calculate Kundli");
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function submitMatch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMatchError("");
+    setMatching(true);
+    try {
+      const response = await fetch("/api/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          p1: birthPayload(matchP1),
+          p2: birthPayload(matchP2),
+          ayanamsha: form.ayanamsha,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to calculate match");
+      }
+      setMatchResult(payload);
+    } catch (error) {
+      setMatchError(error instanceof Error ? error.message : "Unable to calculate match");
+    } finally {
+      setMatching(false);
+    }
+  }
+
+  async function saveCurrentChart() {
+    if (!result) return;
+    const now = new Date().toISOString();
+    const saved: SavedChart = {
+      id: crypto.randomUUID(),
+      label: result.input.label,
+      birth: form,
+      options,
+      settings,
+      result,
+      notes,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await putSavedChart(saved);
+    setSavedCharts(await loadSavedCharts());
+  }
+
+  async function deleteSavedChart(id: string) {
+    await removeSavedChart(id);
+    setSavedCharts(await loadSavedCharts());
+  }
+
+  function loadSavedChart(chart: SavedChart) {
+    setForm(chart.birth);
+    setOptions(chart.options);
+    setSettings(chart.settings);
+    setResult(chart.result);
+    setNotes(chart.notes);
+    setMode("birth");
+    setActiveTab("chart");
+  }
+
+  function exportJson() {
+    const blob = new Blob([JSON.stringify({ form, options, settings, result, notes }, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${result?.input.label ?? "kundli"}-chart.json`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
@@ -284,18 +481,27 @@ export default function Home() {
         <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6">
           <div>
             <h2 className="text-xl font-semibold text-[#681414]">
-              Cast a client-ready Rashi chart with dasha, yogas, vargas, strength, and Panchang context.
+              Cast, interpret, match, save, and print client-ready Kundli reports.
             </h2>
             <p className="mt-1 max-w-4xl text-sm leading-6 text-stone-700">
-              The form resolves cities to latitude, longitude, and timezone before calculation. The API key stays in
-              Next.js route handlers and never ships to the browser.
+              The workspace now includes Varga charts, Shadbala, Ashtakavarga, doshas, rule-based readings,
+              browser-only client records, and print-ready reports.
             </p>
           </div>
         </div>
       </section>
 
+      <section className="border-b border-[#efd99d] bg-white">
+        <div className="mx-auto flex max-w-7xl flex-wrap gap-2 px-4 py-3 sm:px-6">
+          <ModeButton active={mode === "birth"} icon={<Sun size={16} />} label="Birth Chart" onClick={() => setMode("birth")} />
+          <ModeButton active={mode === "matching"} icon={<Users size={16} />} label="Kundli Matching" onClick={() => setMode("matching")} />
+          <ModeButton active={mode === "saved"} icon={<Archive size={16} />} label="Saved Clients" onClick={() => setMode("saved")} />
+        </div>
+      </section>
+
       <div className="mx-auto grid max-w-7xl gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[390px_1fr]">
         <aside className="space-y-4">
+          {mode === "birth" ? (
           <form onSubmit={submitKundli} className="rounded border border-[#e1c878] bg-white shadow-sm">
             <div className="border-b border-[#f0dfae] px-4 py-3">
               <div className="flex items-center gap-2 text-[#681414]">
@@ -335,6 +541,33 @@ export default function Home() {
                     onChange={(event) => setForm({ ...form, time: event.target.value })}
                     required
                   />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="field-label">Seconds</span>
+                  <input
+                    className="field-input"
+                    type="number"
+                    min="0"
+                    max="59"
+                    value={form.seconds}
+                    onChange={(event) => setForm({ ...form, seconds: event.target.value })}
+                  />
+                </label>
+                <label className="block">
+                  <span className="field-label">Gender</span>
+                  <select
+                    className="field-input field-select"
+                    value={form.gender}
+                    onChange={(event) => setForm({ ...form, gender: event.target.value as BirthForm["gender"] })}
+                  >
+                    <option value="not_specified">Not specified</option>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                    <option value="other">Other</option>
+                  </select>
                 </label>
               </div>
 
@@ -413,6 +646,52 @@ export default function Home() {
                 ) : null}
               </div>
 
+              <label className="flex cursor-pointer items-center justify-between rounded border border-[#ecd89d] bg-[#fffaf0] px-3 py-2 text-sm">
+                <span>Manual coordinates / timezone</span>
+                <span className="relative inline-flex items-center">
+                  <input
+                    type="checkbox"
+                    className="peer sr-only"
+                    checked={form.manualCoordinates}
+                    onChange={(event) => setForm({ ...form, manualCoordinates: event.target.checked })}
+                  />
+                  <span className="h-5 w-9 rounded-full bg-stone-300 transition peer-checked:bg-[#a53b21]" />
+                  <span className="absolute left-0.5 size-4 rounded-full bg-white transition peer-checked:translate-x-4" />
+                </span>
+              </label>
+
+              {form.manualCoordinates ? (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <label className="block">
+                    <span className="field-label">Latitude</span>
+                    <input
+                      className="field-input"
+                      value={form.manualLat}
+                      onChange={(event) => setForm({ ...form, manualLat: event.target.value })}
+                      placeholder={form.city ? String(form.city.lat) : "28.6139"}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="field-label">Longitude</span>
+                    <input
+                      className="field-input"
+                      value={form.manualLng}
+                      onChange={(event) => setForm({ ...form, manualLng: event.target.value })}
+                      placeholder={form.city ? String(form.city.lng) : "77.2090"}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="field-label">Timezone</span>
+                    <input
+                      className="field-input"
+                      value={form.timezoneOverride}
+                      onChange={(event) => setForm({ ...form, timezoneOverride: event.target.value })}
+                      placeholder={form.city?.timezone ?? "Asia/Kolkata"}
+                    />
+                  </label>
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <label className="block">
                   <span className="field-label">Ayanamsha</span>
@@ -473,7 +752,25 @@ export default function Home() {
               {submitError ? <p className="mt-3 text-sm text-[#a53b21]">{submitError}</p> : null}
             </div>
           </form>
+          ) : null}
 
+          {mode === "matching" ? (
+            <MatchPanel
+              p1={matchP1}
+              p2={matchP2}
+              setP1={setMatchP1}
+              setP2={setMatchP2}
+              onSubmit={submitMatch}
+              loading={matching}
+              error={matchError}
+            />
+          ) : null}
+
+          {mode === "saved" ? (
+            <SavedSearchPanel search={savedSearch} setSearch={setSavedSearch} count={savedCharts.length} />
+          ) : null}
+
+          {mode === "birth" ? (
           <section className="rounded border border-[#e1c878] bg-white shadow-sm">
             <div className="border-b border-[#f0dfae] px-4 py-3">
               <div className="flex items-center gap-2 text-[#681414]">
@@ -502,14 +799,38 @@ export default function Home() {
               ))}
             </div>
           </section>
+          ) : null}
+
+          {mode === "birth" ? (
+            <ChartSettingsPanel settings={settings} setSettings={setSettings} />
+          ) : null}
         </aside>
 
         <section className="min-w-0 space-y-5">
-          {result ? (
-            <KundliDashboard result={result} />
-          ) : (
+          {mode === "birth" && result ? (
+            <KundliDashboard
+              result={result}
+              settings={settings}
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              notes={notes}
+              setNotes={setNotes}
+              onSave={saveCurrentChart}
+              onExportJson={exportJson}
+            />
+          ) : null}
+          {mode === "birth" && !result ? (
             <EmptyState />
-          )}
+          ) : null}
+          {mode === "matching" ? <MatchingDashboard result={matchResult} /> : null}
+          {mode === "saved" ? (
+            <SavedClientsView
+              charts={savedCharts}
+              search={savedSearch}
+              onLoad={loadSavedChart}
+              onDelete={deleteSavedChart}
+            />
+          ) : null}
         </section>
       </div>
     </main>
@@ -533,12 +854,187 @@ function EmptyState() {
   );
 }
 
-function KundliDashboard({ result }: { result: KundliResult }) {
+function ModeButton({
+  active,
+  icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-2 rounded border px-3 py-2 text-sm font-semibold ${
+        active
+          ? "border-[#8d1f1f] bg-[#8d1f1f] text-white"
+          : "border-[#d8bd72] bg-[#fffaf0] text-[#681414] hover:bg-[#fff3cf]"
+      }`}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function ChartSettingsPanel({
+  settings,
+  setSettings,
+}: {
+  settings: ChartSettings;
+  setSettings: (settings: ChartSettings) => void;
+}) {
+  return (
+    <section className="rounded border border-[#e1c878] bg-white shadow-sm">
+      <div className="border-b border-[#f0dfae] px-4 py-3">
+        <div className="flex items-center gap-2 text-[#681414]">
+          <Compass size={18} />
+          <h2 className="font-semibold">Chart Settings</h2>
+        </div>
+      </div>
+      <div className="space-y-3 p-4">
+        <label className="block">
+          <span className="field-label">Chart style</span>
+          <select
+            className="field-input field-select"
+            value={settings.style}
+            onChange={(event) => setSettings({ ...settings, style: event.target.value as ChartSettings["style"] })}
+          >
+            <option value="north">North Indian</option>
+            <option value="south">South Indian</option>
+            <option value="east">East Indian</option>
+          </select>
+        </label>
+        <div className="rounded border border-[#ecd89d] bg-[#fffaf0] px-3 py-2 text-xs text-stone-600">
+          English report language · {chartDescriptions[settings.style]}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MatchPanel({
+  p1,
+  p2,
+  setP1,
+  setP2,
+  onSubmit,
+  loading,
+  error,
+}: {
+  p1: BirthForm;
+  p2: BirthForm;
+  setP1: (form: BirthForm) => void;
+  setP2: (form: BirthForm) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  loading: boolean;
+  error: string;
+}) {
+  return (
+    <form onSubmit={onSubmit} className="rounded border border-[#e1c878] bg-white shadow-sm">
+      <div className="border-b border-[#f0dfae] px-4 py-3">
+        <div className="flex items-center gap-2 text-[#681414]">
+          <Users size={18} />
+          <h2 className="font-semibold">Kundli Matching</h2>
+        </div>
+      </div>
+      <div className="space-y-4 p-4">
+        <MiniBirthFields label="Person 1" form={p1} setForm={setP1} />
+        <MiniBirthFields label="Person 2" form={p2} setForm={setP2} />
+      </div>
+      <div className="border-t border-[#f0dfae] p-4">
+        <button
+          type="submit"
+          disabled={loading}
+          className="flex h-11 w-full items-center justify-center gap-2 rounded bg-[#8d1f1f] px-4 text-sm font-semibold text-white shadow-sm disabled:bg-stone-400"
+        >
+          {loading ? <LoaderCircle className="animate-spin" size={18} /> : null}
+          Calculate Match
+        </button>
+        {error ? <p className="mt-3 text-sm text-[#a53b21]">{error}</p> : null}
+      </div>
+    </form>
+  );
+}
+
+function MiniBirthFields({
+  label,
+  form,
+  setForm,
+}: {
+  label: string;
+  form: BirthForm;
+  setForm: (form: BirthForm) => void;
+}) {
+  return (
+    <div className="rounded border border-[#ecd89d] bg-[#fffaf0] p-3">
+      <h3 className="mb-3 font-semibold text-[#681414]">{label}</h3>
+      <div className="space-y-3">
+        <input className="field-input" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+        <div className="grid grid-cols-2 gap-2">
+          <input className="field-input" type="date" value={form.date} onChange={(event) => setForm({ ...form, date: event.target.value })} />
+          <input className="field-input" type="time" value={form.time} onChange={(event) => setForm({ ...form, time: event.target.value })} />
+        </div>
+        <input className="field-input" value={form.city?.name ?? form.cityQuery} onChange={(event) => setForm({ ...form, cityQuery: event.target.value })} />
+        <div className="grid grid-cols-2 gap-2">
+          <input className="field-input" value={form.manualLat || String(form.city?.lat ?? "")} onChange={(event) => setForm({ ...form, manualCoordinates: true, manualLat: event.target.value })} placeholder="Latitude" />
+          <input className="field-input" value={form.manualLng || String(form.city?.lng ?? "")} onChange={(event) => setForm({ ...form, manualCoordinates: true, manualLng: event.target.value })} placeholder="Longitude" />
+        </div>
+        <input className="field-input" value={form.timezoneOverride || form.city?.timezone || ""} onChange={(event) => setForm({ ...form, timezoneOverride: event.target.value })} placeholder="Timezone" />
+      </div>
+    </div>
+  );
+}
+
+function SavedSearchPanel({ search, setSearch, count }: { search: string; setSearch: (value: string) => void; count: number }) {
+  return (
+    <section className="rounded border border-[#e1c878] bg-white shadow-sm">
+      <div className="border-b border-[#f0dfae] px-4 py-3">
+        <div className="flex items-center gap-2 text-[#681414]">
+          <Archive size={18} />
+          <h2 className="font-semibold">Saved Clients</h2>
+        </div>
+      </div>
+      <div className="space-y-3 p-4">
+        <input className="field-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search saved charts" />
+        <div className="rounded border border-[#ecd89d] bg-[#fffaf0] px-3 py-2 text-sm text-stone-600">
+          {count} browser-saved chart{count === 1 ? "" : "s"}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function KundliDashboard({
+  result,
+  settings,
+  activeTab,
+  setActiveTab,
+  notes,
+  setNotes,
+  onSave,
+  onExportJson,
+}: {
+  result: KundliResult;
+  settings: ChartSettings;
+  activeTab: ResultTab;
+  setActiveTab: (tab: ResultTab) => void;
+  notes: string;
+  setNotes: (notes: string) => void;
+  onSave: () => void;
+  onExportJson: () => void;
+}) {
   const planets = result.chart?.planets ?? [];
   const houses = result.chart?.houses ?? [];
   const asc = result.chart?.ascendant;
   const panchang = result.panchang ?? {};
   const errors = result.errors ?? {};
+  const d1Chart = { division: 1, name: "Rashi", ascendant: result.chart?.ascendant, planets, houses };
+  const d9Chart = getVargaChart(result.vargas, "D9");
 
   return (
     <>
@@ -573,30 +1069,21 @@ function KundliDashboard({ result }: { result: KundliResult }) {
           </button>
         </div>
 
-        <div className="grid items-start gap-5 p-4 xl:grid-cols-[390px_1fr]">
-          <NorthIndianChart planets={planets} houses={houses} ascendantSign={asc?.sign_id} />
-
-          <div className="self-start space-y-3">
-            <div className="grid rounded border border-[#ecd89d] bg-[#fffdf7] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] sm:grid-cols-2">
-              <MetricCard label="Lagna" value={asc?.sign ?? "N/A"} detail={formatDegree(asc?.degree)} />
-              <MetricCard
-                label="Nakshatra"
-                value={asc?.nakshatra?.name ?? "N/A"}
-                detail={asc?.nakshatra?.pada ? `Pada ${asc.nakshatra.pada}` : "Ascendant"}
-              />
-              <MetricCard
-                label="Sade Sati"
-                value={result.chart?.sade_sati?.active ? "Active" : "Not active"}
-                detail={result.chart?.sade_sati?.phase ?? result.chart?.sade_sati?.description ?? "Saturn context"}
-              />
-              <MetricCard
-                label="Ruleset"
-                value={String(result.chart?.metadata?.ayanamsha ?? "lahiri")}
-                detail={humanize(String(result.chart?.metadata?.house_system ?? "whole_sign"))}
-              />
-            </div>
-            <ChartContext planets={planets} metadata={result.chart?.metadata} />
-          </div>
+        <div className="flex flex-wrap gap-2 border-b border-[#f0dfae] px-4 py-3">
+          {resultTabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key)}
+              className={`rounded border px-3 py-2 text-sm font-semibold ${
+                activeTab === tab.key
+                  ? "border-[#8d1f1f] bg-[#8d1f1f] text-white"
+                  : "border-[#d8bd72] bg-[#fffaf0] text-[#681414] hover:bg-[#fff3cf]"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
       </section>
 
@@ -613,39 +1100,54 @@ function KundliDashboard({ result }: { result: KundliResult }) {
         </section>
       ) : null}
 
-      <div className="grid gap-5 2xl:grid-cols-[1.2fr_0.8fr]">
-        <DataPanel title="Graha Positions" icon={<Sun size={18} />}>
-          <div className="overflow-x-auto">
-            <table className="data-table min-w-[720px]">
-              <thead>
-                <tr>
-                  <th>Graha</th>
-                  <th>Sign</th>
-                  <th>House</th>
-                  <th>Degree</th>
-                  <th>Nakshatra</th>
-                  <th>Motion</th>
-                </tr>
-              </thead>
-              <tbody>
-                {planets.map((planet) => (
-                  <tr key={planet.name}>
-                    <td className="font-semibold text-stone-950">{planet.name}</td>
-                    <td>{planet.sign ?? "N/A"}</td>
-                    <td>{planet.house ?? "N/A"}</td>
-                    <td>{formatDegree(planet.degree_in_sign ?? planet.absolute_degree)}</td>
-                    <td>
-                      {planet.nakshatra ?? "N/A"}
-                      {planet.pada ? ` · Pada ${planet.pada}` : ""}
-                    </td>
-                    <td>{planet.is_retrograde ? "Retrograde" : "Direct"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      {activeTab === "chart" ? (
+        <>
+          <div className="grid items-start gap-5 xl:grid-cols-2">
+            <ChartRenderer chart={d1Chart} settings={settings} title="D1 Rashi" />
+            {d9Chart ? (
+              <ChartRenderer chart={d9Chart} settings={settings} title="D9 Navamsha" />
+            ) : (
+              <MutedMessage label="D9 Navamsha was not returned by the Vargas endpoint." />
+            )}
           </div>
-        </DataPanel>
+          <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
+            <div className="grid rounded border border-[#ecd89d] bg-[#fffdf7] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] sm:grid-cols-2">
+              <MetricCard label="Lagna" value={asc?.sign ?? "N/A"} detail={formatDegree(asc?.degree)} />
+              <MetricCard label="Nakshatra" value={asc?.nakshatra?.name ?? "N/A"} detail={asc?.nakshatra?.pada ? `Pada ${asc.nakshatra.pada}` : "Ascendant"} />
+              <MetricCard label="Sade Sati" value={result.chart?.sade_sati?.active ? "Active" : "Not active"} detail={result.chart?.sade_sati?.phase ?? result.chart?.sade_sati?.description ?? "Saturn context"} />
+              <MetricCard label="Ruleset" value={String(result.chart?.metadata?.ayanamsha ?? "lahiri")} detail={humanize(String(result.chart?.metadata?.house_system ?? "whole_sign"))} />
+            </div>
+            <ChartContext planets={planets} metadata={result.chart?.metadata} />
+          </div>
+          <div className="grid gap-5 xl:grid-cols-3">
+            <DataPanel title="Strength" icon={<Activity size={18} />}>
+              <StrengthView strength={result.strength} />
+            </DataPanel>
+            <DataPanel title="Dasha Snapshot" icon={<Activity size={18} />}>
+              <DashaView dasha={result.dasha} />
+            </DataPanel>
+            <DataPanel title="Yoga Snapshot" icon={<Sparkles size={18} />}>
+              <YogaView yogas={result.yogas} />
+            </DataPanel>
+          </div>
+          <DataPanel title="Report Actions" icon={<FileText size={18} />}>
+            <ReportActions result={result} notes={notes} setNotes={setNotes} onSave={onSave} onExportJson={onExportJson} />
+          </DataPanel>
+        </>
+      ) : null}
 
+      {activeTab === "planets" ? (
+        <div className="grid gap-5">
+          <DataPanel title="Detailed Planetary Calculations" icon={<Sun size={18} />}>
+            <PlanetDetails planets={planets} houses={houses} />
+          </DataPanel>
+          <DataPanel title="Bhava / Chalit Reference" icon={<Compass size={18} />}>
+            <BhavaTable houses={houses} planets={planets} />
+          </DataPanel>
+        </div>
+      ) : null}
+
+      {activeTab === "panchang" ? (
         <DataPanel title="Panchang" icon={<CalendarDays size={18} />}>
           {result.panchang ? (
             <div className="grid gap-3">
@@ -660,25 +1162,42 @@ function KundliDashboard({ result }: { result: KundliResult }) {
             <MutedMessage label="Panchang module is off." />
           )}
         </DataPanel>
-      </div>
+      ) : null}
 
-      <div className="grid gap-5 xl:grid-cols-3">
+      {activeTab === "dasha" ? (
         <DataPanel title="Active Dasha" icon={<Activity size={18} />}>
           <DashaView dasha={result.dasha} />
         </DataPanel>
+      ) : null}
 
+      {activeTab === "yogas" ? (
         <DataPanel title="Yoga Highlights" icon={<Sparkles size={18} />}>
           <YogaView yogas={result.yogas} />
         </DataPanel>
+      ) : null}
 
-        <DataPanel title="Strength" icon={<Activity size={18} />}>
-          <StrengthView strength={result.strength} />
+      {activeTab === "vargas" ? (
+        <DataPanel title="Divisional Charts" icon={<Compass size={18} />}>
+          <VargasView vargas={result.vargas} settings={settings} />
         </DataPanel>
-      </div>
+      ) : null}
 
-      <DataPanel title="Divisional Charts" icon={<Compass size={18} />}>
-        <VargasView vargas={result.vargas} />
-      </DataPanel>
+      {activeTab === "predictions" ? (
+        <DataPanel title="Rule-Based Interpretations" icon={<BookOpen size={18} />}>
+          <PredictionsView result={result} />
+        </DataPanel>
+      ) : null}
+
+      {activeTab === "remedies" ? (
+        <div className="grid gap-5 xl:grid-cols-2">
+          <DataPanel title="Dosha Detection" icon={<Activity size={18} />}>
+            <DoshaView result={result} />
+          </DataPanel>
+          <DataPanel title="Remedy Notes" icon={<BookOpen size={18} />}>
+            <RemediesView result={result} />
+          </DataPanel>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -687,10 +1206,14 @@ function NorthIndianChart({
   planets,
   houses,
   ascendantSign,
+  title = "Rashi Chart",
+  subtitle = "North Indian layout",
 }: {
   planets: Planet[];
   houses: House[];
   ascendantSign?: number;
+  title?: string;
+  subtitle?: string;
 }) {
   const planetByHouse = new Map<number, Planet[]>();
   planets.forEach((planet) => {
@@ -705,8 +1228,8 @@ function NorthIndianChart({
     <div className="min-w-0 overflow-hidden rounded border border-[#d7b860] bg-[#fffaf0] p-3">
       <div className="mb-2 flex items-center justify-between">
         <div>
-          <h3 className="font-semibold text-[#681414]">Rashi Chart</h3>
-          <p className="text-xs text-stone-600">North Indian layout</p>
+          <h3 className="font-semibold text-[#681414]">{title}</h3>
+          <p className="text-xs text-stone-600">{subtitle}</p>
         </div>
         <span className="rounded bg-white px-2 py-1 text-xs font-semibold text-[#8d1f1f]">
           D1
@@ -744,6 +1267,62 @@ function NorthIndianChart({
   );
 }
 
+function ChartRenderer({
+  chart,
+  settings,
+  title,
+}: {
+  chart: {
+    division?: number;
+    name?: string;
+    ascendant?: { sign?: string; sign_id?: number } | undefined;
+    planets?: Planet[];
+    houses?: House[];
+  };
+  settings: ChartSettings;
+  title: string;
+}) {
+  const planets = chart.planets ?? [];
+  const houses = chart.houses ?? [];
+  if (settings.style === "north") {
+    return <NorthIndianChart planets={planets} houses={houses} ascendantSign={chart.ascendant?.sign_id} title={title} subtitle={chart.name ?? chartDescriptions[settings.style]} />;
+  }
+  return (
+    <div className="min-w-0 overflow-hidden rounded border border-[#d7b860] bg-[#fffaf0] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold text-[#681414]">{title}</h3>
+          <p className="text-xs text-stone-600">{chartDescriptions[settings.style]}</p>
+        </div>
+        <span className="rounded bg-white px-2 py-1 text-xs font-semibold text-[#8d1f1f]">
+          D{chart.division ?? 1}
+        </span>
+      </div>
+      <div className={`grid aspect-square w-full gap-1 ${settings.style === "south" ? "grid-cols-4" : "grid-cols-3"}`}>
+        {Array.from({ length: settings.style === "south" ? 16 : 12 }, (_, index) => {
+          const house = houses[index % 12];
+          const housePlanets = planets.filter((planet) => planet.house === house?.house);
+          const isAsc = house?.sign_id === chart.ascendant?.sign_id;
+          return (
+            <div
+              key={`${settings.style}-${index}`}
+              className={`min-h-16 rounded border border-[#d8bd72] bg-white p-2 text-xs ${isAsc ? "ring-2 ring-[#8d1f1f]" : ""}`}
+            >
+              <div className="font-semibold text-[#681414]">
+                {house ? `H${house.house} · ${signGlyphs[house.sign_id ?? 0] ?? ""}` : ""}
+              </div>
+              <div className="mt-1 font-medium text-stone-900">
+                {isAsc ? "Asc " : ""}
+                {housePlanets.map((planet) => planetShort[planet.name] ?? planet.name.slice(0, 2)).join(" ")}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function MetricCard({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return (
     <div className="min-h-28 border-b border-r border-[#f0dfae] bg-[#fffaf0] p-4 last:border-r-0 sm:[&:nth-child(2n)]:border-r-0 sm:[&:nth-child(n+3)]:border-b-0">
@@ -777,6 +1356,311 @@ function ChartContext({
         <InfoRow label="Saturn" value={saturn?.house ? `${saturn.sign}, house ${saturn.house}` : saturn?.sign} />
         <InfoRow label="Timezone" value={String(metadata?.timezone_used ?? "N/A")} />
       </div>
+    </div>
+  );
+}
+
+function ReportActions({
+  result,
+  notes,
+  setNotes,
+  onSave,
+  onExportJson,
+}: {
+  result: KundliResult;
+  notes: string;
+  setNotes: (notes: string) => void;
+  onSave: () => void;
+  onExportJson: () => void;
+}) {
+  const shareUrl =
+    typeof window === "undefined"
+      ? ""
+      : `${window.location.origin}${window.location.pathname}?chart=${encodeURIComponent(
+          btoa(JSON.stringify({ label: result.input.label, city: result.input.city })),
+        )}`;
+  return (
+    <div className="grid gap-3 md:grid-cols-[1fr_auto]">
+      <label className="block">
+        <span className="field-label">Consultation notes</span>
+        <textarea
+          className="min-h-28 w-full rounded border border-[#d8bd72] bg-[#fffdf7] p-3 text-sm outline-none focus:border-[#8d1f1f]"
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          placeholder="Private notes are saved only in this browser."
+        />
+      </label>
+      <div className="grid content-start gap-2">
+        <button type="button" onClick={onSave} className="inline-flex h-10 items-center justify-center gap-2 rounded bg-[#8d1f1f] px-4 text-sm font-semibold text-white">
+          <Save size={16} /> Save chart
+        </button>
+        <button type="button" onClick={onExportJson} className="inline-flex h-10 items-center justify-center gap-2 rounded border border-[#caa24d] bg-[#fffaf0] px-4 text-sm font-semibold text-[#681414]">
+          <Download size={16} /> Export JSON
+        </button>
+        <button type="button" onClick={() => window.print()} className="inline-flex h-10 items-center justify-center gap-2 rounded border border-[#caa24d] bg-[#fffaf0] px-4 text-sm font-semibold text-[#681414]">
+          <FileText size={16} /> Save as PDF
+        </button>
+        <div className="max-w-72 rounded border border-[#ecd89d] bg-[#fffaf0] p-2 text-xs text-stone-600">
+          Share input link: {shareUrl ? <span className="break-all">{shareUrl}</span> : "Available in browser"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlanetDetails({ planets, houses }: { planets: Planet[]; houses: House[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="data-table min-w-[980px]">
+        <thead>
+          <tr>
+            <th>Graha</th>
+            <th>Sign</th>
+            <th>DMS</th>
+            <th>House</th>
+            <th>Rashi Lord</th>
+            <th>Nakshatra Lord</th>
+            <th>House Lord</th>
+            <th>Motion</th>
+            <th>Combust</th>
+          </tr>
+        </thead>
+        <tbody>
+          {planets.map((planet) => {
+            const house = houses.find((item) => item.house === planet.house);
+            return (
+              <tr key={planet.name}>
+                <td className="font-semibold text-stone-950">{planet.name}</td>
+                <td>{planet.sign ?? "N/A"}</td>
+                <td>{formatDms(planet.degree_in_sign ?? planet.absolute_degree)}</td>
+                <td>{planet.house ?? "N/A"}</td>
+                <td>{planet.sign ? signLords[planet.sign] ?? "N/A" : "N/A"}</td>
+                <td>{planet.nakshatra_lord ?? "N/A"}</td>
+                <td>{house?.sign ? signLords[house.sign] ?? "N/A" : "N/A"}</td>
+                <td>{planet.is_retrograde ? "Retrograde" : "Direct"}</td>
+                <td>{combustStatus(planet, planets)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function BhavaTable({ houses, planets }: { houses: House[]; planets: Planet[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="data-table min-w-[720px]">
+        <thead>
+          <tr>
+            <th>Bhava</th>
+            <th>Sign</th>
+            <th>Lord</th>
+            <th>Cusp</th>
+            <th>Occupants</th>
+          </tr>
+        </thead>
+        <tbody>
+          {houses.map((house) => (
+            <tr key={house.house}>
+              <td className="font-semibold text-stone-950">{house.house}</td>
+              <td>{house.sign ?? "N/A"}</td>
+              <td>{house.sign ? signLords[house.sign] ?? "N/A" : "N/A"}</td>
+              <td>{formatDegree(house.degree_cusp ?? undefined)}</td>
+              <td>{planets.filter((planet) => planet.house === house.house).map((planet) => planet.name).join(", ") || "None"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PredictionsView({ result }: { result: KundliResult }) {
+  const planets = result.chart?.planets ?? [];
+  const asc = result.chart?.ascendant;
+  const moon = planets.find((planet) => planet.name === "Moon");
+  const activeDashas = arrayValue(result.dasha?.active_periods);
+  const sections = [
+    {
+      title: "Ascendant Reading",
+      text: `${asc?.sign ?? "The ascendant"} Lagna emphasizes the life path through ${asc?.nakshatra?.name ?? "the birth nakshatra"}. The first priority is to judge the Lagna lord, Moon, and current dasha together before making a prediction.`,
+    },
+    {
+      title: "Moon and Mind",
+      text: `Moon in ${moon?.sign ?? "its sign"} ${moon?.nakshatra ? `in ${moon.nakshatra}` : ""} shows the emotional lens, habits, and daily decision rhythm. Pada ${moon?.pada ?? "N/A"} refines the temperament.`,
+    },
+    ...planets.slice(0, 7).map((planet) => ({
+      title: `${planet.name} in ${planet.sign}`,
+      text: `${planet.name} placed in house ${planet.house ?? "N/A"} gives results through ${planet.sign ?? "its rashi"} themes. ${planet.is_retrograde ? "Retrograde motion asks for repeated review before the planet matures." : "Direct motion makes the result easier to express outwardly."}`,
+    })),
+    ...activeDashas.map((period) => ({
+      title: `${String(period.level ?? "Dasha")} ${String(period.lord ?? "")}`,
+      text: `This period runs from ${String(period.start ?? "N/A")} to ${String(period.end ?? "N/A")}. Judge the lord's sign, house, strength, and yogas before timing specific events.`,
+    })),
+  ];
+
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      {sections.map((section) => (
+        <div key={section.title} className="rounded border border-[#ecd89d] bg-[#fffaf0] p-4">
+          <h3 className="font-semibold text-[#681414]">{section.title}</h3>
+          <p className="mt-2 text-sm leading-6 text-stone-700">{section.text}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DoshaView({ result }: { result: KundliResult }) {
+  const yogas = [...arrayValue(result.yogas?.active_yogas), ...arrayValue(result.yogas?.yogas)];
+  const doshas = yogas.filter((row) => String(row.type ?? row.category ?? "").toLowerCase().includes("dosha") || String(row.category ?? "").toLowerCase().includes("affliction"));
+  const sadeSati = result.chart?.sade_sati;
+  return (
+    <div className="space-y-3">
+      {doshas.length ? doshas.slice(0, 8).map((dosha) => (
+        <div key={String(dosha.id ?? dosha.name)} className="rounded border border-[#ecd89d] bg-[#fffaf0] p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="font-semibold text-[#681414]">{String(dosha.name ?? "Dosha")}</div>
+              <div className="mt-1 text-xs text-stone-600">{String(dosha.description ?? "Detected from yoga endpoint.")}</div>
+            </div>
+            <span className="rounded bg-[#fff3cf] px-2 py-1 text-xs font-semibold text-[#8d1f1f]">{String(dosha.strength ?? "Review")}</span>
+          </div>
+        </div>
+      )) : <MutedMessage label="No active dosha combinations returned by the yoga endpoint." />}
+      <InfoRow label="Sade Sati" value={sadeSati?.active ? `Active · ${sadeSati.phase ?? "phase not specified"}` : "Not active"} />
+    </div>
+  );
+}
+
+function RemediesView({ result }: { result: KundliResult }) {
+  const yogas = [...arrayValue(result.yogas?.active_yogas), ...arrayValue(result.yogas?.yogas)];
+  const activeDoshaNames = yogas.filter((row) => row.active !== false).map((row) => String(row.name ?? ""));
+  const remedies = [
+    "Use remedies as supportive spiritual practice, not as a substitute for professional medical, legal, or financial advice.",
+    result.chart?.sade_sati?.active ? "For Sade Sati, emphasize Saturn discipline: routine, service, accountability, and patience." : "Saturn pressure is not flagged by Sade Sati; still review Saturn's house and strength.",
+    activeDoshaNames.some((name) => name.toLowerCase().includes("manglik")) ? "For Manglik Dosha, verify compatibility and counsel patience in conflict response." : "Manglik Dosha is not a primary active warning in the returned yoga data.",
+    "For weak planets, strengthen behavior first: consistency for Saturn, clarity for Sun, emotional hygiene for Moon, and ethical speech for Mercury.",
+  ];
+  return (
+    <div className="space-y-2">
+      {remedies.map((item, index) => (
+        <div key={item} className="flex gap-2 rounded border border-[#ecd89d] bg-[#fffaf0] p-3 text-sm text-stone-700">
+          <span className="font-semibold text-[#681414]">{index + 1}.</span>
+          <span>{item}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MatchingDashboard({ result }: { result: MatchResult | null }) {
+  if (!result?.match) {
+    return (
+      <div className="grid min-h-[620px] place-items-center rounded border border-[#e1c878] bg-white p-8 text-center shadow-sm">
+        <div className="max-w-lg">
+          <div className="mx-auto flex size-16 items-center justify-center rounded bg-[#fff3cf] text-[#8d1f1f]">
+            <Users size={30} />
+          </div>
+          <h2 className="mt-5 text-2xl font-semibold text-[#681414]">Enter two birth profiles to calculate matching.</h2>
+          <p className="mt-3 text-sm leading-6 text-stone-600">
+            Results include Ashtakoota score, Nadi, Bhakoot, Mangal compatibility, and a print-ready summary.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const match = result.match;
+  const scores = recordValue(match.scores) ?? recordValue(match.details) ?? {};
+  const doshas = recordValue(match.doshas);
+  return (
+    <div className="space-y-5">
+      <section className="rounded border border-[#e1c878] bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-semibold text-[#681414]">
+              {result.input?.p1?.label ?? "Person 1"} + {result.input?.p2?.label ?? "Person 2"}
+            </h2>
+            <p className="mt-1 text-sm text-stone-600">{String(match.recommendation ?? "Compatibility report")}</p>
+          </div>
+          <div className="rounded bg-[#fff3cf] px-4 py-3 text-center">
+            <div className="text-3xl font-semibold text-[#8d1f1f]">{String(match.total_score ?? "N/A")}</div>
+            <div className="text-xs font-semibold uppercase tracking-[0.12em] text-stone-600">of {String(match.max_score ?? 36)}</div>
+          </div>
+        </div>
+        <p className="mt-4 text-sm leading-6 text-stone-700">{String(match.interpretation ?? "Review individual koota scores and dosha notes before final judgment.")}</p>
+      </section>
+
+      <div className="grid gap-5 xl:grid-cols-[1fr_0.8fr]">
+        <DataPanel title="Ashtakoota Scores" icon={<Users size={18} />}>
+          <div className="grid gap-2">
+            {Object.entries(scores).map(([key, value]) => {
+              const row = recordValue(value) ?? {};
+              return <InfoRow key={key} label={humanize(key)} value={`${String(row.score ?? "N/A")} / ${String(row.max ?? "N/A")}`} />;
+            })}
+          </div>
+        </DataPanel>
+        <DataPanel title="Matching Doshas" icon={<Activity size={18} />}>
+          {doshas ? (
+            <div className="grid gap-3">
+              {Object.entries(doshas).map(([key, value]) => (
+                <InfoRow key={key} label={humanize(key)} value={typeof value === "object" ? JSON.stringify(value) : String(value)} />
+              ))}
+            </div>
+          ) : (
+            <MutedMessage label="No dosha data returned for this match." />
+          )}
+        </DataPanel>
+      </div>
+
+      <DataPanel title="Match PDF" icon={<FileText size={18} />}>
+        <button type="button" onClick={() => window.print()} className="inline-flex h-10 items-center justify-center gap-2 rounded bg-[#8d1f1f] px-4 text-sm font-semibold text-white">
+          <FileText size={16} /> Save matching report as PDF
+        </button>
+      </DataPanel>
+    </div>
+  );
+}
+
+function SavedClientsView({
+  charts,
+  search,
+  onLoad,
+  onDelete,
+}: {
+  charts: SavedChart[];
+  search: string;
+  onLoad: (chart: SavedChart) => void;
+  onDelete: (id: string) => void;
+}) {
+  const filtered = charts.filter((chart) =>
+    `${chart.label} ${chart.result.input.city} ${chart.notes}`.toLowerCase().includes(search.toLowerCase()),
+  );
+  if (!filtered.length) {
+    return <EmptyState />;
+  }
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      {filtered.map((chart) => (
+        <div key={chart.id} className="rounded border border-[#e1c878] bg-white p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold text-[#681414]">{chart.label}</h3>
+              <p className="mt-1 text-sm text-stone-600">{chart.result.input.city} · {new Date(chart.updatedAt).toLocaleString()}</p>
+            </div>
+            <button type="button" onClick={() => onDelete(chart.id)} className="rounded border border-[#d8bd72] p-2 text-[#8d1f1f]">
+              <Trash2 size={16} />
+            </button>
+          </div>
+          {chart.notes ? <p className="mt-3 line-clamp-3 text-sm text-stone-700">{chart.notes}</p> : null}
+          <button type="button" onClick={() => onLoad(chart)} className="mt-4 inline-flex h-10 items-center justify-center rounded bg-[#8d1f1f] px-4 text-sm font-semibold text-white">
+            Open chart
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -882,40 +1766,82 @@ function YogaView({ yogas }: { yogas?: Record<string, unknown> }) {
 function StrengthView({ strength }: { strength?: Record<string, unknown> }) {
   if (!strength) return <MutedMessage label="Strength module is off." />;
   const shadbala = recordValue(strength.shadbala);
-  const totals =
-    recordValue(shadbala?.totals) ??
-    recordValue(strength.shadbala_totals) ??
-    recordValue(strength.total_shadbala);
-  const entries = Object.entries(totals ?? {}).slice(0, 7);
-  const sav = recordValue(strength.sarvashtakavarga) ?? recordValue(strength.ashtakavarga);
+  const entries = Object.entries(shadbala ?? {})
+    .map(([planet, value]) => ({ planet, metrics: recordValue(value) }))
+    .filter((row): row is { planet: string; metrics: Record<string, unknown> } => Boolean(row.metrics))
+    .slice(0, 7);
+  const ashtakavarga = recordValue(strength.ashtakavarga);
+  const sav = numberArray(ashtakavarga?.sarvashtakavarga ?? strength.sarvashtakavarga);
+  const strongest = strongestHouse(sav);
+  const weakest = weakestHouse(sav);
 
   return (
     <div className="space-y-4">
       {entries.length ? (
-        <div className="space-y-2">
-          {entries.map(([planet, value]) => (
-            <div key={planet}>
-              <div className="mb-1 flex justify-between text-xs">
-                <span className="font-semibold text-stone-800">{planet}</span>
-                <span className="text-stone-600">{String(value)}</span>
+        <div className="space-y-3">
+          {entries.map(({ planet, metrics }) => {
+            const ratio = numberValue(metrics.ratio);
+            const rupas = numberValue(metrics.shadbala_in_rupas);
+            const minimum = numberValue(metrics.minimum_requirements);
+            const status = strengthStatus(ratio);
+            const width = ratio === null ? 18 : Math.min(100, Math.max(12, ratio * 72));
+
+            return (
+              <div key={planet} className="rounded border border-[#ecd89d] bg-[#fffaf0] p-3">
+                <div className="mb-2 flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-semibold text-[#681414]">{planet}</div>
+                    <div className="mt-1 text-xs leading-5 text-stone-600">
+                      {formatNumber(rupas)} rupas / min {formatNumber(minimum)}
+                    </div>
+                  </div>
+                  <span className={`rounded px-2 py-1 text-xs font-semibold ${status.className}`}>
+                    {status.label}
+                  </span>
+                </div>
+                <div className="mb-1 flex justify-between text-xs text-stone-600">
+                  <span>Ratio</span>
+                  <span className="font-semibold text-stone-800">{formatNumber(ratio)}</span>
+                </div>
+                <div className="h-2 rounded bg-[#f3e4bd]">
+                  <div
+                    className={`h-2 rounded ${status.barClassName}`}
+                    style={{ width: `${width}%` }}
+                  />
+                </div>
               </div>
-              <div className="h-2 rounded bg-[#f3e4bd]">
-                <div
-                  className="h-2 rounded bg-[#a53b21]"
-                  style={{ width: `${Math.min(100, Math.max(12, Number(value) || 35))}%` }}
-                />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
-        <MutedMessage label="Strength totals were not in the expected shape." />
+        <MutedMessage label="Shadbala strength data is unavailable for this chart." />
       )}
-      {sav ? (
+      {sav.length ? (
         <div className="rounded border border-[#ecd89d] bg-[#fffaf0] p-3 text-sm">
-          <div className="font-semibold text-[#681414]">Ashtakavarga</div>
-          <div className="mt-1 text-xs leading-5 text-stone-600">
-            Sarvashtakavarga data returned. Open the JSON response in dev tools for full house contribution detail.
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="font-semibold text-[#681414]">Sarvashtakavarga</div>
+              <div className="mt-1 text-xs text-stone-600">
+                Strongest H{strongest.house}: {strongest.value} · Weakest H{weakest.house}: {weakest.value}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 grid grid-cols-4 gap-1.5">
+            {sav.map((value, index) => (
+              <div
+                key={`sav-${index}`}
+                className={`rounded border px-2 py-1 text-center text-xs ${
+                  value === strongest.value
+                    ? "border-[#1b7f56] bg-[#edf8f2] text-[#155f42]"
+                    : value === weakest.value
+                      ? "border-[#c77a45] bg-[#fff1e8] text-[#8a3d12]"
+                      : "border-[#ead596] bg-white text-stone-700"
+                }`}
+              >
+                <div className="font-semibold">H{index + 1}</div>
+                <div>{value}</div>
+              </div>
+            ))}
           </div>
         </div>
       ) : null}
@@ -923,38 +1849,33 @@ function StrengthView({ strength }: { strength?: Record<string, unknown> }) {
   );
 }
 
-function VargasView({ vargas }: { vargas?: Record<string, unknown> }) {
+function VargasView({ vargas, settings }: { vargas?: Record<string, unknown>; settings: ChartSettings }) {
   if (!vargas) return <MutedMessage label="Varga module is off." />;
   const charts = recordValue(vargas.vargas) ?? vargas;
-  const entries = Object.entries(charts).filter(([, chart]) => typeof chart === "object" && chart !== null);
+  const preferred = ["D1", "D9", "D10", "D7", "D12", "D30", "D60"];
+  const entries = Object.entries(charts)
+    .filter(([, chart]) => typeof chart === "object" && chart !== null)
+    .sort(([a], [b]) => preferred.indexOf(a) - preferred.indexOf(b));
 
   if (!entries.length) return <MutedMessage label="No divisional charts returned." />;
 
   return (
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-      {entries.slice(0, 9).map(([key, chart]) => {
+    <div className="grid gap-5">
+      {entries.filter(([key]) => preferred.includes(key)).map(([key, chart]) => {
         const row = recordValue(chart) ?? {};
-        const asc = recordValue(row.ascendant) ?? {};
-        const planets = arrayValue(row.planets).slice(0, 5);
         return (
-          <div key={key} className="rounded border border-[#ecd89d] bg-[#fffaf0] p-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="font-semibold text-[#681414]">{key}</div>
-                <div className="text-xs text-stone-600">{String(row.name ?? "Divisional chart")}</div>
-              </div>
-              <span className="rounded bg-white px-2 py-1 text-xs font-semibold text-stone-700">
-                Asc {String(asc.sign ?? "N/A")}
-              </span>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-1">
-              {planets.map((planet, index) => (
-                <span key={`${String(planet.name)}-${index}`} className="rounded bg-white px-2 py-1 text-xs text-stone-700">
-                  {String(planet.name ?? "Graha")} {String(planet.sign ?? "")}
-                </span>
-              ))}
-            </div>
-          </div>
+          <ChartRenderer
+            key={key}
+            chart={{
+              division: Number(row.division) || Number(key.replace("D", "")),
+              name: String(row.name ?? "Divisional chart"),
+              ascendant: recordValue(row.ascendant) as { sign?: string; sign_id?: number } | undefined,
+              planets: arrayValue(row.planets) as Planet[],
+              houses: arrayValue(row.houses) as House[],
+            }}
+            settings={settings}
+            title={`${key} ${String(row.name ?? "")}`}
+          />
         );
       })}
     </div>
@@ -983,10 +1904,153 @@ function humanize(value: string) {
   return value.replaceAll("_", " ");
 }
 
+function formatDms(value?: number) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "N/A";
+  const degrees = Math.floor(value);
+  const minutesFloat = (value - degrees) * 60;
+  const minutes = Math.floor(minutesFloat);
+  const seconds = Math.round((minutesFloat - minutes) * 60);
+  return `${degrees}° ${minutes}' ${seconds}"`;
+}
+
+function combustStatus(planet: Planet, planets: Planet[]) {
+  if (planet.name === "Sun") return "Source";
+  const threshold = combustThresholds[planet.name];
+  const sun = planets.find((item) => item.name === "Sun");
+  if (!threshold || typeof planet.absolute_degree !== "number" || typeof sun?.absolute_degree !== "number") {
+    return "N/A";
+  }
+  const distance = angularDistance(planet.absolute_degree, sun.absolute_degree);
+  return distance <= threshold ? `Combust (${distance.toFixed(1)}°)` : "No";
+}
+
+function angularDistance(a: number, b: number) {
+  const diff = Math.abs(a - b) % 360;
+  return diff > 180 ? 360 - diff : diff;
+}
+
+function getVargaChart(vargas: Record<string, unknown> | undefined, key: string) {
+  const charts = recordValue(vargas?.vargas) ?? vargas;
+  const row = recordValue(charts?.[key]);
+  if (!row) return null;
+  return {
+    division: Number(row.division) || Number(key.replace("D", "")),
+    name: String(row.name ?? key),
+    ascendant: recordValue(row.ascendant) as { sign?: string; sign_id?: number } | undefined,
+    planets: arrayValue(row.planets) as Planet[],
+    houses: arrayValue(row.houses) as House[],
+  };
+}
+
+function birthPayload(form: BirthForm) {
+  const [year, month, day] = form.date.split("-").map(Number);
+  const [hour, minute] = form.time.split(":").map(Number);
+  const lat = form.manualCoordinates && form.manualLat.trim() ? Number(form.manualLat) : (form.city?.lat ?? Number(form.manualLat));
+  const lng = form.manualCoordinates && form.manualLng.trim() ? Number(form.manualLng) : (form.city?.lng ?? Number(form.manualLng));
+  return {
+    label: form.name,
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second: Number(form.seconds) || 0,
+    city: form.city?.name ?? form.cityQuery,
+    lat,
+    lng,
+    tz_str: form.timezoneOverride.trim() || form.city?.timezone || "AUTO",
+  };
+}
+
+async function savedDb() {
+  return openDB("kundli-chart-desk", 1, {
+    upgrade(db) {
+      if (!db.objectStoreNames.contains("charts")) {
+        db.createObjectStore("charts", { keyPath: "id" });
+      }
+    },
+  });
+}
+
+async function loadSavedCharts() {
+  const db = await savedDb();
+  const rows = await db.getAll("charts");
+  return (rows as SavedChart[]).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+async function putSavedChart(chart: SavedChart) {
+  const db = await savedDb();
+  await db.put("charts", chart);
+}
+
+async function removeSavedChart(id: string) {
+  const db = await savedDb();
+  await db.delete("charts", id);
+}
+
 function percent(value: unknown) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "N/A";
   return `${Math.round(numeric * 100)}%`;
+}
+
+function numberValue(value: unknown) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function numberArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.map(numberValue).filter((item): item is number => item !== null)
+    : [];
+}
+
+function formatNumber(value: number | null) {
+  if (value === null) return "N/A";
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function strengthStatus(ratio: number | null) {
+  if (ratio === null) {
+    return {
+      label: "Unknown",
+      className: "bg-white text-stone-600",
+      barClassName: "bg-stone-400",
+    };
+  }
+  if (ratio >= 1.25) {
+    return {
+      label: "Strong",
+      className: "bg-[#edf8f2] text-[#155f42]",
+      barClassName: "bg-[#1b7f56]",
+    };
+  }
+  if (ratio >= 1) {
+    return {
+      label: "Adequate",
+      className: "bg-[#fff3cf] text-[#7a4b00]",
+      barClassName: "bg-[#c08a2c]",
+    };
+  }
+  return {
+    label: "Needs attention",
+    className: "bg-[#fff1e8] text-[#8a3d12]",
+    barClassName: "bg-[#c77a45]",
+  };
+}
+
+function strongestHouse(values: number[]) {
+  return values.reduce(
+    (best, value, index) => (value > best.value ? { house: index + 1, value } : best),
+    { house: 1, value: values[0] ?? 0 },
+  );
+}
+
+function weakestHouse(values: number[]) {
+  return values.reduce(
+    (best, value, index) => (value < best.value ? { house: index + 1, value } : best),
+    { house: 1, value: values[0] ?? 0 },
+  );
 }
 
 function formatRahu(value: Record<string, unknown>) {

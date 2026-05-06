@@ -111,4 +111,18 @@ select {
   main {
     background: white !important;
   }
+
+  header,
+  section {
+    box-shadow: none !important;
+  }
+
+  section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .data-table {
+    font-size: 0.75rem;
+  }
 }
