@@ -9,7 +9,8 @@ The browser talks only to local Next.js route handlers, so the FreeAstro API key
 ## What It Includes
 
 - Birth chart form with city search, timezone, ayanamsha, houses, and node settings
-- D1 Rashi and D9 Navamsha chart views, plus divisional chart support
+- FreeAstroAPI-rendered SVG visual charts for D1 Rashi and D9 Navamsha
+- Divisional chart support with local fallback renderers
 - North Indian, South Indian, and East Indian chart styles
 - Planet tables, dasha, yogas, panchang, Shadbala, Ashtakavarga, predictions, and remedies
 - Kundli matching mode and browser-only saved clients
@@ -94,5 +95,6 @@ npm run build
 Required FreeAstro docs:
 
 - Vedic chart: https://www.freeastroapi.com/docs/vedic/chart
+- Vedic visual chart: https://www.freeastroapi.com/docs/vedic/visual-chart
 - City search: https://www.freeastroapi.com/docs/geo/search
 - Match by birth: https://www.freeastroapi.com/docs/vedic/match

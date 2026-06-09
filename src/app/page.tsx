@@ -58,6 +58,14 @@ type ChartSettings = {
   language: "en";
 };
 
+type VisualChart = {
+  format: "svg";
+  contentType?: string;
+  chart_style?: "north_indian" | "south_indian" | "east_indian";
+  divisions?: number[];
+  svg?: string;
+};
+
 type Mode = "birth" | "matching" | "saved";
 
 type ResultTab = "chart" | "planets" | "dasha" | "yogas" | "vargas" | "panchang" | "predictions" | "remedies";
@@ -124,6 +132,7 @@ type KundliResult = {
   strength?: Record<string, unknown>;
   vargas?: Record<string, unknown>;
   panchang?: Record<string, unknown>;
+  visualChart?: VisualChart;
   errors?: Record<string, string>;
 };
 
@@ -250,6 +259,12 @@ const chartDescriptions: Record<ChartSettings["style"], string> = {
   north: "North Indian diamond",
   south: "South Indian fixed signs",
   east: "East Indian square",
+};
+
+const visualChartStyles: Record<ChartSettings["style"], VisualChart["chart_style"]> = {
+  north: "north_indian",
+  south: "south_indian",
+  east: "east_indian",
 };
 
 const southSignCells: Record<number, { x: number; y: number }> = {
@@ -408,6 +423,9 @@ export default function Home() {
             node_type: form.node_type,
           },
           options,
+          visual: {
+            chart_style: visualChartStyles[settings.style],
+          },
         }),
       });
       const payload = await response.json();
@@ -1137,14 +1155,18 @@ function KundliDashboard({
 
       {activeTab === "chart" ? (
         <>
-          <div className="grid items-start gap-5 xl:grid-cols-2">
-            <ChartRenderer chart={d1Chart} settings={settings} title="D1 Rashi" />
-            {d9Chart ? (
-              <ChartRenderer chart={d9Chart} settings={settings} title="D9 Navamsha" />
-            ) : (
-              <MutedMessage label="D9 Navamsha was not returned by the Vargas endpoint." />
-            )}
-          </div>
+          {result.visualChart?.svg && result.visualChart.chart_style === visualChartStyles[settings.style] ? (
+            <VisualChartPanel visualChart={result.visualChart} settings={settings} />
+          ) : (
+            <div className="grid items-start gap-5 xl:grid-cols-2">
+              <ChartRenderer chart={d1Chart} settings={settings} title="D1 Rashi" />
+              {d9Chart ? (
+                <ChartRenderer chart={d9Chart} settings={settings} title="D9 Navamsha" />
+              ) : (
+                <MutedMessage label="D9 Navamsha was not returned by the Vargas endpoint." />
+              )}
+            </div>
+          )}
           <div className="grid gap-5 xl:grid-cols-[1fr_1fr]">
             <div className="grid rounded border border-[#ecd89d] bg-[#fffdf7] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] sm:grid-cols-2">
               <MetricCard label="Lagna" value={asc?.sign ?? "N/A"} detail={formatDegree(asc?.degree)} />
@@ -1372,6 +1394,41 @@ function NorthIndianChart({
         })}
       </svg>
     </div>
+  );
+}
+
+function VisualChartPanel({
+  visualChart,
+  settings,
+}: {
+  visualChart: VisualChart;
+  settings: ChartSettings;
+}) {
+  const svg = visualChart.svg ?? "";
+  const divisions = visualChart.divisions?.map((division) => `D${division}`).join(" + ") || "D1 + D9";
+
+  return (
+    <section className="overflow-hidden rounded border border-[#d7b860] bg-[#fffaf0] shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#ecd89d] bg-[#fffdf7] px-4 py-3">
+        <div>
+          <h3 className="font-semibold text-[#681414]">FreeAstroApi Visual Chart</h3>
+          <p className="text-xs text-stone-600">
+            {divisions} · {chartDescriptions[settings.style]}
+          </p>
+        </div>
+        <span className="rounded bg-[#fff3cf] px-2 py-1 text-xs font-semibold text-[#8d1f1f]">
+          SVG
+        </span>
+      </div>
+      <div className="bg-white p-3">
+        <iframe
+          title={`${divisions} ${chartDescriptions[settings.style]} Kundli visual chart`}
+          srcDoc={svg}
+          sandbox=""
+          className="mx-auto aspect-[2/1] w-full max-w-[980px] border-0"
+        />
+      </div>
+    </section>
   );
 }
 

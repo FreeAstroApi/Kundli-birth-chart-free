@@ -29,6 +29,10 @@ type OptionsPayload = {
   panchang?: boolean;
 };
 
+type VisualPayload = {
+  chart_style?: "north_indian" | "south_indian" | "east_indian";
+};
+
 type EndpointResult = {
   key: string;
   data?: unknown;
@@ -47,6 +51,7 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const birth = body?.birth as BirthPayload | undefined;
   const options = (body?.options ?? {}) as OptionsPayload;
+  const visual = (body?.visual ?? {}) as VisualPayload;
 
   const validationError = validateBirth(birth);
   if (validationError) {
@@ -73,6 +78,13 @@ export async function POST(request: NextRequest) {
 
   const calls: (() => Promise<EndpointResult>)[] = [
     () => callFreeAstro("chart", "/api/v2/vedic/chart", baseBirth, apiKey),
+    () =>
+      callFreeAstroImage(
+        "visualChart",
+        "/api/v2/vedic/visual/chart",
+        visualChartPayload(baseBirth, visual),
+        apiKey,
+      ),
   ];
 
   if (options.dasha) {
@@ -150,6 +162,51 @@ export async function POST(request: NextRequest) {
   return NextResponse.json(response);
 }
 
+function visualChartPayload(baseBirth: Record<string, unknown>, visual: VisualPayload) {
+  return {
+    ...baseBirth,
+    divisions: [1, 9],
+    chart_style: visual.chart_style ?? "north_indian",
+    format: "svg",
+    size: 700,
+    theme_type: "light",
+    body_types: ["ascendant", "classical_grahas", "nodes", "outer_planets"],
+    ascendant_text_color: "#0B7285",
+    display_settings: {
+      ascendant: true,
+      rahu: true,
+      ketu: true,
+      uranus: true,
+      neptune: true,
+      pluto: true,
+      sign_labels: true,
+    },
+    custom_theme: {
+      background: "#fffdf7",
+      panel_background: "#fffaf0",
+      panel_border: "#d7b860",
+      grid: "#c08a2c",
+      outer_line: "#8d1f1f",
+      sign_text: "#681414",
+      house_text: "#7a5b1d",
+      body_text: "#1c1712",
+      ascendant_text: "#0B7285",
+      title_text: "#681414",
+      subtitle_text: "#675b4a",
+      badge_background: "#fff3cf",
+    },
+    chart_config: {
+      body_font_size: 19,
+      body_font_weight: "600",
+      sign_font_size: 24,
+      grid_line_width: 1.1,
+      outer_line_width: 1.6,
+      panel_padding: 18,
+      columns: 2,
+    },
+  };
+}
+
 async function runFreeAstroCalls(calls: (() => Promise<EndpointResult>)[]) {
   const results: EndpointResult[] = [];
   for (const call of calls) {
@@ -189,6 +246,59 @@ async function callFreeAstro(
       key,
       error: error instanceof Error ? error.message : `${key} endpoint failed.`,
     };
+  }
+}
+
+async function callFreeAstroImage(
+  key: string,
+  path: string,
+  payload: Record<string, unknown>,
+  apiKey: string,
+): Promise<EndpointResult> {
+  try {
+    const response = await freeAstroFetch(new URL(path, API_BASE), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+      },
+      body: JSON.stringify(payload),
+      cache: "no-store",
+    }, 18_000);
+    const contentType = response.headers.get("content-type") ?? "";
+    const body = await response.text();
+
+    if (!response.ok) {
+      const parsed = parseJson(body);
+      return {
+        key,
+        error: readableError(parsed) || `${key} endpoint failed with status ${response.status}.`,
+      };
+    }
+
+    return {
+      key,
+      data: {
+        format: "svg",
+        contentType,
+        chart_style: payload.chart_style,
+        divisions: payload.divisions,
+        svg: body,
+      },
+    };
+  } catch (error) {
+    return {
+      key,
+      error: error instanceof Error ? error.message : `${key} endpoint failed.`,
+    };
+  }
+}
+
+function parseJson(value: string) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
   }
 }
 
