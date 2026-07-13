@@ -14,6 +14,7 @@ The browser talks only to local Next.js route handlers, so the FreeAstro API key
 - North Indian, South Indian, and East Indian chart styles
 - Planet tables, dasha, yogas, panchang, Shadbala, Ashtakavarga, predictions, and remedies
 - Kundli matching mode and browser-only saved clients
+- Public Muhurat search for general work, purchases, Griha Pravesh, Namkaran, and Mundan
 - Print-ready report flow for PDF export through the browser
 
 ## Stack
@@ -91,6 +92,7 @@ npm run build
 - `GET /api/geo/search` proxies FreeAstro city autocomplete.
 - `POST /api/kundli` calls the Vedic chart modules server-side.
 - `POST /api/match` calls the Vedic matching flow server-side.
+- `POST /api/muhurat` searches up to 31 days for ranked public Muhurat windows.
 
 Required FreeAstro docs:
 
@@ -98,3 +100,4 @@ Required FreeAstro docs:
 - Vedic visual chart: https://www.freeastroapi.com/docs/vedic/visual-chart
 - City search: https://www.freeastroapi.com/docs/geo/search
 - Match by birth: https://www.freeastroapi.com/docs/vedic/match
+- Muhurat search: https://www.freeastroapi.com/docs/vedic/muhurat-search

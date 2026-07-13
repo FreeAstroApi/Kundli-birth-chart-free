@@ -5,6 +5,7 @@ import {
   Archive,
   BookOpen,
   CalendarDays,
+  CalendarSearch,
   Check,
   ChevronRight,
   Clock3,
@@ -66,7 +67,7 @@ type VisualChart = {
   svg?: string;
 };
 
-type Mode = "birth" | "matching" | "saved";
+type Mode = "birth" | "matching" | "muhurat" | "saved";
 
 type ResultTab = "chart" | "planets" | "dasha" | "yogas" | "vargas" | "panchang" | "predictions" | "remedies";
 
@@ -157,6 +158,54 @@ type MatchResult = {
   match?: Record<string, unknown>;
 };
 
+type MuhuratPurpose =
+  | "general_work"
+  | "vehicle_purchase"
+  | "property_purchase"
+  | "griha_pravesh"
+  | "namkaran"
+  | "mundan";
+
+type MuhuratForm = {
+  purpose: MuhuratPurpose;
+  startDate: string;
+  endDate: string;
+  cityQuery: string;
+  city: CityResult | null;
+  ayanamsha: BirthForm["ayanamsha"];
+  limit: string;
+};
+
+type MuhuratWindow = {
+  date?: string;
+  start?: string;
+  end?: string;
+  duration_minutes?: number;
+  score?: number;
+  quality?: string;
+  reasons?: string[];
+  warnings?: string[];
+  source_periods?: string[];
+  criteria?: Record<string, unknown>;
+};
+
+type MuhuratResult = {
+  input?: {
+    city?: string;
+    lat?: number;
+    lng?: number;
+    timezone?: string;
+  };
+  purpose?: MuhuratPurpose;
+  range?: {
+    start_date?: string;
+    end_date?: string;
+    day_count?: number;
+  };
+  best_windows?: MuhuratWindow[];
+  metadata?: Record<string, unknown>;
+};
+
 const initialForm: BirthForm = {
   name: "Client",
   date: "1997-09-22",
@@ -182,6 +231,25 @@ const initialForm: BirthForm = {
   house_system: "whole_sign",
   node_type: "mean",
 };
+
+const initialMuhuratForm: MuhuratForm = {
+  purpose: "general_work",
+  startDate: "",
+  endDate: "",
+  cityQuery: "Mumbai",
+  city: initialForm.city,
+  ayanamsha: "lahiri",
+  limit: "8",
+};
+
+const muhuratPurposes: { value: MuhuratPurpose; label: string }[] = [
+  { value: "general_work", label: "General work" },
+  { value: "vehicle_purchase", label: "Vehicle purchase" },
+  { value: "property_purchase", label: "Property purchase" },
+  { value: "griha_pravesh", label: "Griha Pravesh" },
+  { value: "namkaran", label: "Namkaran" },
+  { value: "mundan", label: "Mundan" },
+];
 
 const signGlyphs = ["", "Ar", "Ta", "Ge", "Cn", "Le", "Vi", "Li", "Sc", "Sg", "Cp", "Aq", "Pi"];
 
@@ -343,6 +411,13 @@ export default function Home() {
   const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
   const [matching, setMatching] = useState(false);
   const [matchError, setMatchError] = useState("");
+  const [muhuratForm, setMuhuratForm] = useState<MuhuratForm>(initialMuhuratForm);
+  const [muhuratCityResults, setMuhuratCityResults] = useState<CityResult[]>([]);
+  const [muhuratCityLoading, setMuhuratCityLoading] = useState(false);
+  const [muhuratCityError, setMuhuratCityError] = useState("");
+  const [muhuratResult, setMuhuratResult] = useState<MuhuratResult | null>(null);
+  const [muhuratLoading, setMuhuratLoading] = useState(false);
+  const [muhuratError, setMuhuratError] = useState("");
 
   useEffect(() => {
     loadSavedCharts().then(setSavedCharts).catch(() => setSavedCharts([]));
@@ -383,6 +458,42 @@ export default function Home() {
       window.clearTimeout(timer);
     };
   }, [form.cityQuery, form.city?.name]);
+
+  useEffect(() => {
+    const q = muhuratForm.cityQuery.trim();
+    if (q.length < 2 || muhuratForm.city?.name === q) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setMuhuratCityLoading(true);
+      setMuhuratCityError("");
+      try {
+        const response = await fetch(`/api/geo/search?q=${encodeURIComponent(q)}&limit=8`, {
+          signal: controller.signal,
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error ?? "City search failed");
+        }
+        setMuhuratCityResults(payload.results ?? []);
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setMuhuratCityError(error instanceof Error ? error.message : "City search failed");
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setMuhuratCityLoading(false);
+        }
+      }
+    }, 280);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [muhuratForm.cityQuery, muhuratForm.city?.name]);
 
   async function submitKundli(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -467,6 +578,73 @@ export default function Home() {
     }
   }
 
+  async function submitMuhurat(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMuhuratError("");
+
+    if (!muhuratForm.city) {
+      setMuhuratError("Select a city from search before finding Muhurat windows.");
+      return;
+    }
+
+    const dayCount = dateRangeDayCount(muhuratForm.startDate, muhuratForm.endDate);
+    if (!Number.isFinite(dayCount)) {
+      setMuhuratError("Choose a valid start and end date.");
+      return;
+    }
+    if (dayCount < 1) {
+      setMuhuratError("End date must be on or after the start date.");
+      return;
+    }
+    if (dayCount > 31) {
+      setMuhuratError("Muhurat searches are limited to 31 days.");
+      return;
+    }
+
+    setMuhuratLoading(true);
+    try {
+      const response = await fetch("/api/muhurat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          purpose: muhuratForm.purpose,
+          start_date: muhuratForm.startDate,
+          end_date: muhuratForm.endDate,
+          city: muhuratForm.city.name,
+          lat: muhuratForm.city.lat,
+          lng: muhuratForm.city.lng,
+          tz_str: muhuratForm.city.timezone,
+          ayanamsha: muhuratForm.ayanamsha,
+          limit: Number(muhuratForm.limit),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to search Muhurat windows");
+      }
+      setMuhuratResult(payload);
+    } catch (error) {
+      setMuhuratError(error instanceof Error ? error.message : "Unable to search Muhurat windows");
+    } finally {
+      setMuhuratLoading(false);
+    }
+  }
+
+  function openMuhuratSearch() {
+    setMuhuratForm((current) => {
+      if (current.startDate && current.endDate) return current;
+      const start = new Date();
+      const end = new Date(start);
+      end.setDate(end.getDate() + 30);
+      return {
+        ...current,
+        startDate: toDateInput(start),
+        endDate: toDateInput(end),
+      };
+    });
+    setMode("muhurat");
+  }
+
   async function saveCurrentChart() {
     if (!result) return;
     const now = new Date().toISOString();
@@ -537,7 +715,7 @@ export default function Home() {
               Cast, interpret, match, save, and print client-ready Kundli reports.
             </h2>
             <p className="mt-1 max-w-4xl text-sm leading-6 text-stone-700">
-              The workspace now includes Varga charts, Shadbala, Ashtakavarga, doshas, rule-based readings,
+              The workspace includes visual charts, Varga analysis, matching, public Muhurat planning,
               browser-only client records, and print-ready reports.
             </p>
           </div>
@@ -548,6 +726,7 @@ export default function Home() {
         <div className="mx-auto flex max-w-7xl flex-wrap gap-2 px-4 py-3 sm:px-6">
           <ModeButton active={mode === "birth"} icon={<Sun size={16} />} label="Birth Chart" onClick={() => setMode("birth")} />
           <ModeButton active={mode === "matching"} icon={<Users size={16} />} label="Kundli Matching" onClick={() => setMode("matching")} />
+          <ModeButton active={mode === "muhurat"} icon={<CalendarSearch size={16} />} label="Muhurat Search" onClick={openMuhuratSearch} />
           <ModeButton active={mode === "saved"} icon={<Archive size={16} />} label="Saved Clients" onClick={() => setMode("saved")} />
         </div>
       </section>
@@ -819,6 +998,21 @@ export default function Home() {
             />
           ) : null}
 
+          {mode === "muhurat" ? (
+            <MuhuratSearchPanel
+              form={muhuratForm}
+              setForm={setMuhuratForm}
+              cityResults={muhuratCityResults}
+              cityLoading={muhuratCityLoading}
+              cityError={muhuratCityError}
+              setCityResults={setMuhuratCityResults}
+              setCityError={setMuhuratCityError}
+              onSubmit={submitMuhurat}
+              loading={muhuratLoading}
+              error={muhuratError}
+            />
+          ) : null}
+
           {mode === "saved" ? (
             <SavedSearchPanel search={savedSearch} setSearch={setSavedSearch} count={savedCharts.length} />
           ) : null}
@@ -876,6 +1070,8 @@ export default function Home() {
             <EmptyState />
           ) : null}
           {mode === "matching" ? <MatchingDashboard result={matchResult} /> : null}
+          {mode === "muhurat" && muhuratResult ? <MuhuratDashboard result={muhuratResult} /> : null}
+          {mode === "muhurat" && !muhuratResult ? <MuhuratEmptyState /> : null}
           {mode === "saved" ? (
             <SavedClientsView
               charts={savedCharts}
@@ -901,6 +1097,22 @@ function EmptyState() {
         <p className="mt-3 text-sm leading-6 text-stone-600">
           Results will appear as a consultation dashboard with a North Indian chart, planet table,
           active dasha stack, yoga highlights, strength metrics, divisional charts, and Panchang.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function MuhuratEmptyState() {
+  return (
+    <div className="grid min-h-[620px] place-items-center rounded border border-[#e1c878] bg-white p-8 text-center shadow-sm">
+      <div className="max-w-lg">
+        <div className="mx-auto flex size-16 items-center justify-center rounded bg-[#fff3cf] text-[#8d1f1f]">
+          <CalendarSearch size={30} />
+        </div>
+        <h2 className="mt-5 text-2xl font-semibold text-[#681414]">Find auspicious Muhurat windows.</h2>
+        <p className="mt-3 text-sm leading-6 text-stone-600">
+          Select a purpose, location, and date range to see ranked public windows.
         </p>
       </div>
     </div>
@@ -1007,6 +1219,203 @@ function MatchPanel({
         >
           {loading ? <LoaderCircle className="animate-spin" size={18} /> : null}
           Calculate Match
+        </button>
+        {error ? <p className="mt-3 text-sm text-[#a53b21]">{error}</p> : null}
+      </div>
+    </form>
+  );
+}
+
+function MuhuratSearchPanel({
+  form,
+  setForm,
+  cityResults,
+  cityLoading,
+  cityError,
+  setCityResults,
+  setCityError,
+  onSubmit,
+  loading,
+  error,
+}: {
+  form: MuhuratForm;
+  setForm: (form: MuhuratForm) => void;
+  cityResults: CityResult[];
+  cityLoading: boolean;
+  cityError: string;
+  setCityResults: (results: CityResult[]) => void;
+  setCityError: (error: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  loading: boolean;
+  error: string;
+}) {
+  const maxEndDate = form.startDate ? addDaysToDateInput(form.startDate, 30) : undefined;
+
+  return (
+    <form onSubmit={onSubmit} className="rounded border border-[#e1c878] bg-white shadow-sm">
+      <div className="border-b border-[#f0dfae] px-4 py-3">
+        <div className="flex items-center gap-2 text-[#681414]">
+          <CalendarSearch size={18} />
+          <h2 className="font-semibold">Muhurat Search</h2>
+        </div>
+      </div>
+
+      <div className="space-y-4 p-4">
+        <label className="block">
+          <span className="field-label">Purpose</span>
+          <select
+            className="field-input field-select"
+            value={form.purpose}
+            onChange={(event) => setForm({ ...form, purpose: event.target.value as MuhuratPurpose })}
+          >
+            {muhuratPurposes.map((purpose) => (
+              <option key={purpose.value} value={purpose.value}>
+                {purpose.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block">
+            <span className="field-label">Start date</span>
+            <input
+              className="field-input"
+              type="date"
+              value={form.startDate}
+              onChange={(event) => {
+                const startDate = event.target.value;
+                const maxEnd = addDaysToDateInput(startDate, 30);
+                setForm({
+                  ...form,
+                  startDate,
+                  endDate: form.endDate && form.endDate > maxEnd ? maxEnd : form.endDate,
+                });
+              }}
+              required
+            />
+          </label>
+          <label className="block">
+            <span className="field-label">End date</span>
+            <input
+              className="field-input"
+              type="date"
+              min={form.startDate || undefined}
+              max={maxEndDate}
+              value={form.endDate}
+              onChange={(event) => setForm({ ...form, endDate: event.target.value })}
+              required
+            />
+          </label>
+        </div>
+
+        <div className="relative">
+          <label className="block">
+            <span className="field-label">Location</span>
+            <div className="relative">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-stone-400"
+                size={17}
+              />
+              <input
+                className="field-input field-input-with-icon"
+                value={form.cityQuery}
+                onChange={(event) => {
+                  const cityQuery = event.target.value;
+                  if (cityQuery.trim().length < 2) {
+                    setCityResults([]);
+                    setCityError("");
+                  }
+                  setForm({ ...form, cityQuery, city: null });
+                }}
+                placeholder="Search city or locality"
+                required
+              />
+              {cityLoading ? (
+                <LoaderCircle
+                  className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-[#a53b21]"
+                  size={17}
+                />
+              ) : null}
+            </div>
+          </label>
+
+          {cityResults.length > 0 ? (
+            <div className="absolute z-20 mt-1 max-h-72 w-full overflow-auto rounded border border-[#dbbf70] bg-white shadow-lg">
+              {cityResults.map((city) => (
+                <button
+                  key={`${city.name}-${city.lat}-${city.lng}`}
+                  type="button"
+                  className="flex w-full items-start gap-3 border-b border-stone-100 px-3 py-2 text-left last:border-0 hover:bg-[#fff3cf]"
+                  onClick={() => {
+                    setForm({ ...form, city, cityQuery: city.name });
+                    setCityResults([]);
+                  }}
+                >
+                  <MapPin className="mt-0.5 shrink-0 text-[#8d1f1f]" size={16} />
+                  <span>
+                    <span className="block text-sm font-medium text-stone-950">
+                      {city.name}
+                      {city.district ? `, ${city.district}` : ""}
+                    </span>
+                    <span className="block text-xs text-stone-600">
+                      {[city.state, city.country, city.timezone].filter(Boolean).join(" · ")}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {cityError ? <p className="mt-2 text-xs text-[#a53b21]">{cityError}</p> : null}
+          {form.city ? (
+            <div className="mt-2 rounded border border-[#ead596] bg-[#fffaf0] px-3 py-2 text-xs text-stone-700">
+              <div className="font-medium text-stone-950">
+                {form.city.name}, {form.city.country}
+              </div>
+              <div>
+                {form.city.lat.toFixed(4)}, {form.city.lng.toFixed(4)} · {form.city.timezone}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block">
+            <span className="field-label">Ayanamsha</span>
+            <select
+              className="field-input field-select"
+              value={form.ayanamsha}
+              onChange={(event) => setForm({ ...form, ayanamsha: event.target.value as BirthForm["ayanamsha"] })}
+            >
+              <option value="lahiri">Lahiri</option>
+              <option value="raman">Raman</option>
+              <option value="krishnamurti">Krishnamurti</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="field-label">Best windows</span>
+            <input
+              className="field-input"
+              type="number"
+              min="1"
+              max="50"
+              value={form.limit}
+              onChange={(event) => setForm({ ...form, limit: event.target.value })}
+              required
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="border-t border-[#f0dfae] p-4">
+        <button
+          type="submit"
+          disabled={loading}
+          className="flex h-11 w-full items-center justify-center gap-2 rounded bg-[#8d1f1f] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#711818] disabled:cursor-not-allowed disabled:bg-stone-400"
+        >
+          {loading ? <LoaderCircle className="animate-spin" size={18} /> : <CalendarSearch size={18} />}
+          Find Muhurat Windows
         </button>
         {error ? <p className="mt-3 text-sm text-[#a53b21]">{error}</p> : null}
       </div>
@@ -1841,6 +2250,130 @@ function RemediesView({ result }: { result: KundliResult }) {
   );
 }
 
+function MuhuratDashboard({ result }: { result: MuhuratResult }) {
+  const windows = result.best_windows ?? [];
+  const timezone = String(result.metadata?.timezone_used ?? result.input?.timezone ?? "Local time");
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded border border-[#e1c878] bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-2xl font-semibold text-[#681414]">
+                {muhuratPurposeLabel(result.purpose)} Muhurat
+              </h2>
+              <span className="rounded bg-[#fff3cf] px-2 py-1 text-xs font-semibold text-[#8d1f1f]">
+                Public search
+              </span>
+            </div>
+            <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-stone-600">
+              <span className="inline-flex items-center gap-1">
+                <MapPin size={15} /> {result.input?.city ?? "Selected location"}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Clock3 size={15} /> {timezone}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <CalendarDays size={15} /> {formatMuhuratRange(result.range)}
+              </span>
+            </p>
+          </div>
+          <div className="min-w-24 rounded bg-[#8d1f1f] px-4 py-3 text-center text-white">
+            <div className="text-3xl font-semibold">{windows.length}</div>
+            <div className="text-xs font-semibold uppercase tracking-[0.12em] text-[#f8dea0]">
+              Window{windows.length === 1 ? "" : "s"}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {windows.length ? (
+        <div className="grid gap-4">
+          {windows.map((window, index) => (
+            <MuhuratWindowCard key={`${window.start ?? window.date ?? "window"}-${index}`} window={window} rank={index + 1} />
+          ))}
+        </div>
+      ) : (
+        <section className="rounded border border-[#e1c878] bg-white p-8 text-center shadow-sm">
+          <h3 className="text-xl font-semibold text-[#681414]">No qualifying windows found.</h3>
+          <p className="mt-2 text-sm text-stone-600">Try another purpose or a wider date range.</p>
+        </section>
+      )}
+
+      <section className="flex flex-wrap items-center justify-between gap-2 border-t border-[#e1c878] px-1 pt-3 text-xs text-stone-600">
+        <span>{humanize(String(result.metadata?.ruleset_version ?? "FreeAstro Muhurat V2"))}</span>
+        <span>{String(result.metadata?.ayanamsha ?? "lahiri")} ayanamsha</span>
+      </section>
+    </div>
+  );
+}
+
+function MuhuratWindowCard({ window, rank }: { window: MuhuratWindow; rank: number }) {
+  const criteria = window.criteria ?? {};
+  const reasons = window.reasons ?? window.source_periods ?? [];
+  const warnings = window.warnings ?? [];
+
+  return (
+    <article className="overflow-hidden rounded border border-[#e1c878] bg-white shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[#f0dfae] bg-[#fffdf7] p-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.12em] text-[#8d1f1f]">Rank {rank}</span>
+            <span className="text-xs font-medium text-stone-500">{humanize(window.quality ?? "auspicious")}</span>
+          </div>
+          <h3 className="mt-1 text-lg font-semibold text-stone-950">
+            {formatMuhuratDateTime(window.start)}
+          </h3>
+          <p className="mt-1 text-sm text-stone-600">Until {formatMuhuratDateTime(window.end)}</p>
+        </div>
+        <div className="min-w-20 rounded bg-[#fff3cf] px-3 py-2 text-center">
+          <div className="text-2xl font-semibold text-[#8d1f1f]">{window.score ?? "N/A"}</div>
+          <div className="text-xs font-semibold uppercase tracking-[0.1em] text-stone-600">Score</div>
+        </div>
+      </div>
+
+      <dl className="grid border-b border-[#f0dfae] sm:grid-cols-2 xl:grid-cols-4">
+        <MuhuratCriterion label="Duration" value={formatMuhuratDuration(window.duration_minutes)} />
+        <MuhuratCriterion label="Tithi" value={objectPath(criteria, "tithi.value")} />
+        <MuhuratCriterion label="Nakshatra" value={objectPath(criteria, "nakshatra.value")} />
+        <MuhuratCriterion label="Weekday" value={objectPath(criteria, "weekday.value")} />
+      </dl>
+
+      <div className="space-y-3 p-4">
+        {reasons.length ? (
+          <div className="flex flex-wrap gap-2">
+            {reasons.map((reason) => (
+              <span key={reason} className="rounded border border-[#dfc983] bg-[#fffaf0] px-2 py-1 text-xs font-medium text-stone-700">
+                {reason}
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        {warnings.length ? (
+          <div className="border-l-4 border-[#a53b21] bg-[#fff4ed] px-3 py-2 text-sm text-[#8a2a13]">
+            {warnings.join(" ")}
+          </div>
+        ) : (
+          <div className="border-l-4 border-[#4f7a46] bg-[#f3f8ef] px-3 py-2 text-sm text-[#35542f]">
+            No caution overlap returned for this window.
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function MuhuratCriterion({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div className="border-b border-[#f0dfae] px-4 py-3 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0">
+      <dt className="text-xs font-semibold uppercase tracking-[0.08em] text-stone-500">{label}</dt>
+      <dd className="mt-1 text-sm font-semibold text-stone-800">{String(value ?? "N/A")}</dd>
+    </div>
+  );
+}
+
 function MatchingDashboard({ result }: { result: MatchResult | null }) {
   if (!result?.match) {
     return (
@@ -2178,6 +2711,71 @@ function InfoRow({ label, value }: { label: string; value: unknown }) {
 
 function MutedMessage({ label }: { label: string }) {
   return <div className="rounded border border-dashed border-[#dbc075] bg-[#fffaf0] p-4 text-sm text-stone-600">{label}</div>;
+}
+
+function toDateInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDaysToDateInput(value: string, days: number) {
+  const date = dateInputAsUtc(value);
+  if (!date) return "";
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function dateRangeDayCount(start: string, end: string) {
+  const startDate = dateInputAsUtc(start);
+  const endDate = dateInputAsUtc(end);
+  if (!startDate || !endDate) return Number.NaN;
+  return Math.floor((endDate.getTime() - startDate.getTime()) / 86_400_000) + 1;
+}
+
+function dateInputAsUtc(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return null;
+  return date;
+}
+
+function muhuratPurposeLabel(purpose?: MuhuratPurpose) {
+  return muhuratPurposes.find((item) => item.value === purpose)?.label ?? "Public";
+}
+
+function formatMuhuratRange(range?: MuhuratResult["range"]) {
+  if (!range?.start_date || !range.end_date) return "Selected date range";
+  const days = range.day_count ? ` · ${range.day_count} day${range.day_count === 1 ? "" : "s"}` : "";
+  return `${formatDateInput(range.start_date)} - ${formatDateInput(range.end_date)}${days}`;
+}
+
+function formatDateInput(value: string) {
+  const date = dateInputAsUtc(value);
+  return date
+    ? date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+    : value;
+}
+
+function formatMuhuratDateTime(value?: string) {
+  if (!value) return "Time not returned";
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value);
+  if (!match) return value;
+  const [, year, month, day, hourValue, minute] = match;
+  const hour = Number(hourValue);
+  const meridiem = hour >= 12 ? "PM" : "AM";
+  const displayHour = hour % 12 || 12;
+  return `${formatDateInput(`${year}-${month}-${day}`)} · ${displayHour}:${minute} ${meridiem}`;
+}
+
+function formatMuhuratDuration(value?: number) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "N/A";
+  const totalMinutes = Math.round(value);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (!hours) return `${minutes}m`;
+  return `${hours}h ${minutes}m`;
 }
 
 function formatDegree(value?: number) {
