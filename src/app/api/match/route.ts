@@ -40,16 +40,15 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const response = await freeAstroFetch(new URL("/api/v1/vedic/match", API_BASE), {
+    const response = await freeAstroFetch(new URL("/api/v2/vedic/match", API_BASE), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-api-key": apiKey,
       },
       body: JSON.stringify({
-        p1: normalizeBirth(p1),
-        p2: normalizeBirth(p2),
-        ayanamsha,
+        person1: normalizeBirth(p1, ayanamsha),
+        person2: normalizeBirth(p2, ayanamsha),
       }),
       cache: "no-store",
     }, 18_000);
@@ -78,17 +77,21 @@ export async function POST(request: NextRequest) {
   }
 }
 
-function normalizeBirth(birth: MatchBirth) {
+function normalizeBirth(birth: MatchBirth, ayanamsha: string) {
   return {
     year: birth.year,
     month: birth.month,
     day: birth.day,
     hour: birth.hour,
     minute: birth.minute,
+    second: birth.second ?? 0,
     lat: birth.lat,
     lng: birth.lng,
     city: birth.city,
     tz_str: birth.tz_str || "AUTO",
+    ayanamsha,
+    house_system: "whole_sign",
+    node_type: "mean",
   };
 }
 
@@ -99,6 +102,9 @@ function validateMatchBirth(label: string, birth?: MatchBirth) {
     if (typeof birth[field] !== "number" || Number.isNaN(birth[field])) {
       return `Invalid ${label}.${field}.`;
     }
+  }
+  if (birth.second !== undefined && (birth.second < 0 || birth.second > 59)) {
+    return `Invalid ${label}.second.`;
   }
   return "";
 }

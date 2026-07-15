@@ -67,6 +67,7 @@ export async function POST(request: NextRequest) {
     day: birth.day,
     hour: birth.hour,
     minute: birth.minute,
+    second: birth.second ?? 0,
     city: birth.city,
     lat: birth.lat,
     lng: birth.lng,
@@ -201,7 +202,7 @@ function visualChartPayload(baseBirth: Record<string, unknown>, visual: VisualPa
       sign_font_size: 24,
       grid_line_width: 1.1,
       outer_line_width: 1.6,
-      panel_padding: 18,
+      panel_padding: 20,
       columns: 2,
     },
   };
@@ -317,6 +318,9 @@ function validateBirth(birth?: BirthPayload) {
   if (birth.day < 1 || birth.day > 31) return "Day must be between 1 and 31.";
   if (birth.hour < 0 || birth.hour > 23) return "Hour must be between 0 and 23.";
   if (birth.minute < 0 || birth.minute > 59) return "Minute must be between 0 and 59.";
+  if (birth.second !== undefined && (birth.second < 0 || birth.second > 59)) {
+    return "Second must be between 0 and 59.";
+  }
   if (birth.lat < -90 || birth.lat > 90) return "Latitude must be between -90 and 90.";
   if (birth.lng < -180 || birth.lng > 180) return "Longitude must be between -180 and 180.";
 
